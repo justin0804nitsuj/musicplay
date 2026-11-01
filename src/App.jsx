@@ -81,20 +81,25 @@ export default function App() {
     setTimeout(() => setStatusMessage(''), 3000);
   };
 
-  // Active media DOM element selector (Audio vs Video) with extension fallback
-  const getActiveMediaElement = useCallback(() => {
-    if (!currentTrack) return audioRef.current;
-    const fileNameLower = (currentTrack.name || '').toLowerCase();
-    const isVideo = Boolean(
-      currentTrack.isVideo ||
-      (currentTrack.type && currentTrack.type.startsWith('video/')) ||
+  // Helper to determine if track is video (with extension fallback for iOS)
+  const isVideoTrack = useCallback((track) => {
+    if (!track) return false;
+    const fileNameLower = (track.name || '').toLowerCase();
+    return Boolean(
+      track.isVideo ||
+      (track.type && track.type.startsWith('video/')) ||
       fileNameLower.endsWith('.mp4') ||
       fileNameLower.endsWith('.mov') ||
       fileNameLower.endsWith('.webm') ||
       fileNameLower.endsWith('.m4v')
     );
-    return isVideo ? videoRef.current : audioRef.current;
-  }, [currentTrack]);
+  }, []);
+
+  // Active media DOM element selector (Audio vs Video) with extension fallback
+  const getActiveMediaElement = useCallback(() => {
+    if (!currentTrack) return audioRef.current;
+    return isVideoTrack(currentTrack) ? videoRef.current : audioRef.current;
+  }, [currentTrack, isVideoTrack]);
 
   // -------------------------------------------------------------
   // 1. Critical Memory Management: Lazy Loading Object URLs
@@ -122,6 +127,16 @@ export default function App() {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.removeAttribute('src');
+        audioRef.current.load();
+      }
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      }
       revokeActiveUrl();
     };
   }, [revokeActiveUrl]);
@@ -229,15 +244,7 @@ export default function App() {
     if (index < 0 || index >= list.length) return;
 
     const targetTrack = list[index];
-    const fileNameLower = (targetTrack.name || '').toLowerCase();
-    const isVideo = Boolean(
-      targetTrack.isVideo ||
-      (targetTrack.type && targetTrack.type.startsWith('video/')) ||
-      fileNameLower.endsWith('.mp4') ||
-      fileNameLower.endsWith('.mov') ||
-      fileNameLower.endsWith('.webm') ||
-      fileNameLower.endsWith('.m4v')
-    );
+    const isVideo = isVideoTrack(targetTrack);
 
     setCurrentIndex(index);
     setCurrentTime(0);
@@ -352,20 +359,36 @@ export default function App() {
   }, [playTrackAtIndex, getActiveMediaElement]);
 
   const togglePlay = useCallback(() => {
-    const mediaEl = getActiveMediaElement();
+    const isVideo = isVideoTrack(currentTrack);
+    const mediaEl = isVideo ? videoRef.current : audioRef.current;
     if (!mediaEl || !currentTrack) return;
 
     if (isPlaying) {
       mediaEl.pause();
       setIsPlaying(false);
     } else {
+      // Force iOS to drop the inactive context before playing
+      if (isVideo) {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.removeAttribute('src');
+          audioRef.current.load();
+        }
+      } else {
+        if (videoRef.current) {
+          videoRef.current.pause();
+          videoRef.current.removeAttribute('src');
+          videoRef.current.load();
+        }
+      }
+
       mediaEl.play().then(() => {
         setIsPlaying(true);
       }).catch((err) => {
         console.warn('Playback error:', err);
       });
     }
-  }, [currentTrack, isPlaying, getActiveMediaElement]);
+  }, [currentTrack, isPlaying, isVideoTrack]);
 
   const handleSeek = useCallback((seekTime) => {
     const mediaEl = getActiveMediaElement();
@@ -400,18 +423,8 @@ export default function App() {
     const video = videoRef.current;
     if (!video || !currentTrack) return;
 
-    const fileNameLower = (currentTrack.name || '').toLowerCase();
-    const isVideo = Boolean(
-      currentTrack.isVideo ||
-      (currentTrack.type && currentTrack.type.startsWith('video/')) ||
-      fileNameLower.endsWith('.mp4') ||
-      fileNameLower.endsWith('.mov') ||
-      fileNameLower.endsWith('.webm') ||
-      fileNameLower.endsWith('.m4v')
-    );
-
     // Ensure PiP only fires for video tracks
-    if (!isVideo) return;
+    if (!isVideoTrack(currentTrack)) return;
 
     try {
       if (typeof video.webkitSetPresentationMode === 'function') {
@@ -542,9 +555,17 @@ export default function App() {
   const handleSelectPlaylist = async (playlistId) => {
     if (playlistId === activePlaylistId) return;
 
-    // Stop current playback and clean URL
-    const mediaEl = getActiveMediaElement();
-    if (mediaEl) mediaEl.pause();
+    // Stop current playback, force drop iOS media contexts, and clean URL
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.removeAttribute('src');
+      audioRef.current.load();
+    }
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.removeAttribute('src');
+      videoRef.current.load();
+    }
     revokeActiveUrl();
     setIsPlaying(false);
     setCurrentIndex(-1);
@@ -726,8 +747,16 @@ export default function App() {
     const isDeletingCurrent = indexToDelete === currentIndex;
 
     if (isDeletingCurrent) {
-      const mediaEl = getActiveMediaElement();
-      if (mediaEl) mediaEl.pause();
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.removeAttribute('src');
+        audioRef.current.load();
+      }
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      }
       revokeActiveUrl();
       setIsPlaying(false);
     }
@@ -757,8 +786,16 @@ export default function App() {
     if (tracks.length === 0) return;
     if (!window.confirm('Delete all tracks from this playlist?')) return;
 
-    const mediaEl = getActiveMediaElement();
-    if (mediaEl) mediaEl.pause();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.removeAttribute('src');
+      audioRef.current.load();
+    }
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.removeAttribute('src');
+      videoRef.current.load();
+    }
     revokeActiveUrl();
 
     await clearPlaylistTracksFromDB(activePlaylistId);

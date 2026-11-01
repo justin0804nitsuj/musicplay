@@ -17,12 +17,22 @@ export default function MediaDisplay({
 }) {
   const [viewMode, setViewMode] = useState('artwork'); // 'artwork' | 'lyrics'
 
+  const fileNameLower = (currentTrack?.name || '').toLowerCase();
+  const isVideo = Boolean(
+    currentTrack?.isVideo ||
+    (currentTrack?.type && currentTrack.type.startsWith('video/')) ||
+    fileNameLower.endsWith('.mp4') ||
+    fileNameLower.endsWith('.mov') ||
+    fileNameLower.endsWith('.webm') ||
+    fileNameLower.endsWith('.m4v')
+  );
+
   return (
     <div className="relative flex flex-col items-center justify-center my-4 w-full max-w-md">
       {/* Persistent Video Element Container (Hidden when track is not a video) */}
       <div
         className={`relative w-full max-w-lg aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl border border-slate-800 group transition-all ${
-          currentTrack?.isVideo ? 'block' : 'hidden'
+          isVideo ? 'block' : 'hidden'
         }`}
       >
         <video
@@ -65,7 +75,7 @@ export default function MediaDisplay({
       </div>
 
       {/* Audio / Vinyl / Lyrics Display (Shown when not video) */}
-      {!currentTrack?.isVideo && (
+      {!isVideo && (
         <>
           {!currentTrack ? (
             <div className="w-56 h-56 sm:w-64 sm:h-64 rounded-3xl border-2 border-dashed border-slate-800 bg-slate-900/30 flex flex-col items-center justify-center text-slate-500">
