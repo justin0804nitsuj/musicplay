@@ -81,12 +81,19 @@ export default function App() {
     setTimeout(() => setStatusMessage(''), 3000);
   };
 
-  // Active media DOM element selector (Audio vs Video)
+  // Active media DOM element selector (Audio vs Video) with extension fallback
   const getActiveMediaElement = useCallback(() => {
-    if (currentTrack?.isVideo) {
-      return videoRef.current;
-    }
-    return audioRef.current;
+    if (!currentTrack) return audioRef.current;
+    const fileNameLower = (currentTrack.name || '').toLowerCase();
+    const isVideo = Boolean(
+      currentTrack.isVideo ||
+      (currentTrack.type && currentTrack.type.startsWith('video/')) ||
+      fileNameLower.endsWith('.mp4') ||
+      fileNameLower.endsWith('.mov') ||
+      fileNameLower.endsWith('.webm') ||
+      fileNameLower.endsWith('.m4v')
+    );
+    return isVideo ? videoRef.current : audioRef.current;
   }, [currentTrack]);
 
   // -------------------------------------------------------------
@@ -157,8 +164,13 @@ export default function App() {
 
     init();
 
-    // Check PiP capability
-    if (document.pictureInPictureEnabled) {
+    // Check PiP capability (Standard W3C + iOS Safari WebKit Presentation Mode)
+    const hasStandardPiP = typeof document !== 'undefined' && Boolean(document.pictureInPictureEnabled);
+    const hasWebKitPiP = typeof window !== 'undefined' && (
+      (window.HTMLVideoElement && typeof window.HTMLVideoElement.prototype.webkitSetPresentationMode === 'function') ||
+      Boolean(videoRef.current?.webkitSetPresentationMode)
+    );
+    if (hasStandardPiP || hasWebKitPiP) {
       setIsPiPAvailable(true);
     }
 
@@ -217,6 +229,16 @@ export default function App() {
     if (index < 0 || index >= list.length) return;
 
     const targetTrack = list[index];
+    const fileNameLower = (targetTrack.name || '').toLowerCase();
+    const isVideo = Boolean(
+      targetTrack.isVideo ||
+      (targetTrack.type && targetTrack.type.startsWith('video/')) ||
+      fileNameLower.endsWith('.mp4') ||
+      fileNameLower.endsWith('.mov') ||
+      fileNameLower.endsWith('.webm') ||
+      fileNameLower.endsWith('.m4v')
+    );
+
     setCurrentIndex(index);
     setCurrentTime(0);
     setDuration(0);
@@ -224,11 +246,14 @@ export default function App() {
     // Create Lazy Object URL only for this selected track
     const url = loadTrackUrl(targetTrack);
 
-    if (targetTrack.isVideo) {
+    if (isVideo) {
+      // 1. Audio engine: PAUSE, remove source & reload so iOS background audio is not blocked
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current.removeAttribute('src');
+        audioRef.current.load();
       }
+      // 2. Video engine: set ObjectURL & play
       if (videoRef.current && url) {
         videoRef.current.src = url;
         videoRef.current.playbackRate = playbackRateRef.current;
@@ -236,15 +261,18 @@ export default function App() {
         if (autoPlay) {
           setIsPlaying(true);
           videoRef.current.play().catch((err) => {
-            console.warn('Video playback error:', err);
+            console.warn('Video playback error (iOS interaction required):', err);
           });
         }
       }
     } else {
+      // 1. Video engine: PAUSE, remove source & reload so iOS doesn't aggressively suspend background audio
       if (videoRef.current) {
         videoRef.current.pause();
         videoRef.current.removeAttribute('src');
+        videoRef.current.load();
       }
+      // 2. Audio engine: set ObjectURL & play
       if (audioRef.current && url) {
         audioRef.current.src = url;
         audioRef.current.playbackRate = playbackRateRef.current;
@@ -252,7 +280,7 @@ export default function App() {
         if (autoPlay) {
           setIsPlaying(true);
           audioRef.current.play().catch((err) => {
-            console.warn('Audio playback error (interaction required on iOS):', err);
+            console.warn('Audio playback error (iOS interaction required):', err);
           });
         }
       }
@@ -369,17 +397,41 @@ export default function App() {
   }, []);
 
   const handleTogglePiP = useCallback(async () => {
-    if (!videoRef.current) return;
+    const video = videoRef.current;
+    if (!video || !currentTrack) return;
+
+    const fileNameLower = (currentTrack.name || '').toLowerCase();
+    const isVideo = Boolean(
+      currentTrack.isVideo ||
+      (currentTrack.type && currentTrack.type.startsWith('video/')) ||
+      fileNameLower.endsWith('.mp4') ||
+      fileNameLower.endsWith('.mov') ||
+      fileNameLower.endsWith('.webm') ||
+      fileNameLower.endsWith('.m4v')
+    );
+
+    // Ensure PiP only fires for video tracks
+    if (!isVideo) return;
+
     try {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      } else {
-        await videoRef.current.requestPictureInPicture();
+      if (typeof video.webkitSetPresentationMode === 'function') {
+        // iOS Safari specific WebKit Presentation Mode
+        const currentMode = video.webkitPresentationMode;
+        video.webkitSetPresentationMode(
+          currentMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture'
+        );
+      } else if (document.pictureInPictureEnabled) {
+        // Standard W3C API
+        if (document.pictureInPictureElement) {
+          await document.exitPictureInPicture();
+        } else {
+          await video.requestPictureInPicture();
+        }
       }
     } catch (err) {
       console.warn('Picture-in-Picture error:', err);
     }
-  }, []);
+  }, [currentTrack]);
 
   // -------------------------------------------------------------
   // 5. Media Events Handlers
@@ -554,25 +606,49 @@ export default function App() {
 
     // Process media files
     for (const file of audioVideoFiles) {
+      const fileNameLower = file.name.toLowerCase();
+
+      // iOS Safari empty MIME type fallback: check audio/video by file extension
+      const isAudio =
+        (file.type && file.type.startsWith('audio/')) ||
+        fileNameLower.endsWith('.mp3') ||
+        fileNameLower.endsWith('.m4a') ||
+        fileNameLower.endsWith('.aac') ||
+        fileNameLower.endsWith('.flac') ||
+        fileNameLower.endsWith('.wav') ||
+        fileNameLower.endsWith('.ogg');
+
+      const isVideo =
+        (file.type && file.type.startsWith('video/')) ||
+        fileNameLower.endsWith('.mp4') ||
+        fileNameLower.endsWith('.mov') ||
+        fileNameLower.endsWith('.webm') ||
+        fileNameLower.endsWith('.m4v');
+
+      // Skip non-media files
+      if (!isAudio && !isVideo) continue;
+
+      const isVideoTrack = isVideo && !isAudio;
       const trackId = `track_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
       const cleanTitle = cleanFileName(file.name);
-      const isVideo = file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(file.name);
 
       // Extract ID3 metadata if audio file
       let id3 = null;
-      if (!isVideo) {
+      if (isAudio && !isVideoTrack) {
         id3 = await parseID3Tags(file);
       }
+
+      const mimeType = file.type || (isVideoTrack ? 'video/mp4' : 'audio/mpeg');
 
       const trackRecord = {
         id: trackId,
         name: file.name,
         title: id3?.title || cleanTitle,
-        artist: id3?.artist || 'Local Media',
+        artist: id3?.artist || (isVideoTrack ? 'Local Video' : 'Local Audio'),
         album: id3?.album || '',
         size: file.size,
-        type: file.type || (isVideo ? 'video/mp4' : 'audio/mpeg'),
-        isVideo,
+        type: mimeType,
+        isVideo: isVideoTrack,
         coverArt: id3?.coverArt || null,
         lyrics: null,
         playlistId: activePlaylistId,
@@ -721,12 +797,12 @@ export default function App() {
         preload="auto"
       />
 
-      {/* Hidden File Import Input (accepts audio, video, lrc) */}
+      {/* Hidden File Import Input (accepts audio, video, lrc with explicit extensions for iOS Files app) */}
       <input
         ref={fileInputRef}
         type="file"
         multiple
-        accept="audio/*,video/*,.lrc,text/plain"
+        accept="audio/*,video/*,.mp3,.m4a,.aac,.flac,.wav,.ogg,.mp4,.mov,.webm,.m4v,.lrc,text/plain"
         onChange={handleFileImport}
         className="hidden"
       />

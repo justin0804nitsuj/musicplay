@@ -144,7 +144,7 @@ export default function PlayerControls({
         </button>
 
         {/* Picture in Picture Button (Active if video file) */}
-        {currentTrack?.isVideo && isPiPAvailable && (
+        {(currentTrack?.isVideo || /\.(mp4|mov|webm|m4v)$/i.test(currentTrack?.name || '')) && isPiPAvailable && (
           <button
             onClick={onTogglePiP}
             className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white font-medium transition-colors"

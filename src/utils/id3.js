@@ -7,8 +7,16 @@ import jsmediatags from 'jsmediatags';
  */
 export function parseID3Tags(file) {
   return new Promise((resolve) => {
-    // Only attempt ID3 tags for audio files (primarily MP3)
-    if (!file || (file.type && !file.type.includes('audio') && !file.name?.endsWith('.mp3'))) {
+    // Only attempt ID3 tags for audio files (handle iOS empty file.type fallback)
+    const fileNameLower = (file?.name || '').toLowerCase();
+    const isAudio =
+      (file?.type && file.type.includes('audio')) ||
+      fileNameLower.endsWith('.mp3') ||
+      fileNameLower.endsWith('.m4a') ||
+      fileNameLower.endsWith('.aac') ||
+      fileNameLower.endsWith('.flac');
+
+    if (!file || !isAudio) {
       resolve(null);
       return;
     }

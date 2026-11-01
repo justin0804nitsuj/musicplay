@@ -31,6 +31,7 @@ export default function MediaDisplay({
           onLoadedMetadata={onMediaLoadedMetadata}
           onEnded={onMediaEnded}
           playsInline
+          webkit-playsinline="true"
           className="w-full h-full object-contain"
         />
 
