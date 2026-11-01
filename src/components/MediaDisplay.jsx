@@ -42,17 +42,16 @@ export default function MediaDisplay({
             className="w-full h-full object-contain"
           />
 
-          {/* Video Overlay Controls */}
-          <div className="absolute top-3 right-3 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-950/70 backdrop-blur-md p-1.5 rounded-xl border border-slate-800">
-            {isPiPAvailable && (
-              <button
-                onClick={onTogglePiP}
-                title="Picture-in-Picture"
-                className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
-              >
-                <PictureInPicture2 className="w-4 h-4" />
-              </button>
-            )}
+          {/* Video Overlay Controls (Visible on mobile touch & desktop hover) */}
+          <div className="absolute top-3 right-3 flex items-center gap-2 opacity-95 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity bg-slate-950/80 backdrop-blur-md p-1.5 rounded-xl border border-slate-700/80 shadow-lg z-20">
+            <button
+              onClick={onTogglePiP}
+              title="Picture-in-Picture"
+              className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow transition-colors active:scale-95"
+            >
+              <PictureInPicture2 className="w-3.5 h-3.5" />
+              <span>PiP</span>
+            </button>
             <button
               onClick={() => {
                 if (videoRef.current) {

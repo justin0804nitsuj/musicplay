@@ -150,14 +150,20 @@ export default function PlayerControls({
           </div>
         </div>
 
-        {/* Picture in Picture Button (Active if video file) */}
-        {(currentTrack?.isVideo || /\.(mp4|mov|webm|m4v)$/i.test(currentTrack?.name || '')) && isPiPAvailable && (
+        {/* Picture in Picture Button */}
+        {Boolean(currentTrack) && (
           <button
             onClick={onTogglePiP}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white font-medium transition-colors"
-            title="Picture in Picture"
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-xl font-medium transition-colors ${
+              (currentTrack?.isVideo || /\.(mp4|mov|webm|m4v)$/i.test(currentTrack?.name || ''))
+                ? 'bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40'
+                : 'bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+            title={(currentTrack?.isVideo || /\.(mp4|mov|webm|m4v)$/i.test(currentTrack?.name || '')) ? '開啟子母畫面 (PiP)' : '子母畫面為影片專用'}
           >
-            <PictureInPicture2 className="w-3.5 h-3.5 text-indigo-400" />
+            <PictureInPicture2 className={`w-3.5 h-3.5 ${
+              (currentTrack?.isVideo || /\.(mp4|mov|webm|m4v)$/i.test(currentTrack?.name || '')) ? 'text-indigo-400' : 'text-slate-500'
+            }`} />
             <span>PiP</span>
           </button>
         )}

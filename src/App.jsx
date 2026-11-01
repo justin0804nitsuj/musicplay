@@ -447,30 +447,57 @@ export default function App() {
   }, []);
 
   const handleTogglePiP = useCallback(async () => {
-    const video = videoRef.current;
-    if (!video || !currentTrack) return;
+    if (!currentTrack) {
+      showNotification('請先選擇或匯入曲目');
+      return;
+    }
 
-    // Ensure PiP only fires for video tracks
-    if (!isVideoTrack(currentTrack)) return;
+    // If current track is audio, explain how background audio works
+    if (!isVideoTrack(currentTrack)) {
+      showNotification('子母畫面（PiP）為影片專用。音樂直接返回桌面即可在背景聆聽！');
+      return;
+    }
+
+    const video = videoRef.current;
+    if (!video) {
+      showNotification('影片播放器尚未準備就緒');
+      return;
+    }
 
     try {
-      // 1. Apple WebKit Presentation Mode (iOS Safari)
+      // Ensure video is playing so PiP buffer is active
+      if (video.paused) {
+        video.play().catch(console.warn);
+      }
+
+      // 1. Apple WebKit Presentation Mode (iOS Safari on iPhone / iPad)
       if (typeof video.webkitSetPresentationMode === 'function') {
         const currentMode = video.webkitPresentationMode;
         const targetMode = currentMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture';
         video.webkitSetPresentationMode(targetMode);
-      } else if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function') {
-        // 2. Standard W3C API (Desktop / Chrome / Safari 13.1+)
+        return;
+      }
+
+      // 2. Standard W3C API (Desktop / Chrome / Safari 13.1+)
+      if (typeof video.requestPictureInPicture === 'function') {
         if (document.pictureInPictureElement) {
           await document.exitPictureInPicture();
         } else {
           await video.requestPictureInPicture();
         }
-      } else if (typeof video.webkitEnterFullscreen === 'function') {
-        video.webkitEnterFullscreen();
+        return;
       }
+
+      // 3. Fallback for iOS WebKit Fullscreen
+      if (typeof video.webkitEnterFullscreen === 'function') {
+        video.webkitEnterFullscreen();
+        return;
+      }
+
+      showNotification('此裝置或瀏覽器不支援子母畫面');
     } catch (err) {
       console.warn('Picture-in-Picture error:', err);
+      showNotification('啟動子母畫面失敗，請確認影片已在播放中');
     }
   }, [currentTrack, isVideoTrack]);
 
