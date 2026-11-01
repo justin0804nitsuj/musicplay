@@ -29,50 +29,48 @@ export default function MediaDisplay({
 
   return (
     <div className="relative flex flex-col items-center justify-center my-4 w-full max-w-md">
-      {/* Persistent Video Element Container (Hidden when track is not a video) */}
-      <div
-        className={`relative w-full max-w-lg aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl border border-slate-800 group transition-all ${
-          isVideo ? 'block' : 'hidden'
-        }`}
-      >
-        <video
-          ref={videoRef}
-          onTimeUpdate={onMediaTimeUpdate}
-          onLoadedMetadata={onMediaLoadedMetadata}
-          onEnded={onMediaEnded}
-          playsInline
-          webkit-playsinline="true"
-          className="w-full h-full object-contain"
-        />
+      {/* Video Element Container: ONLY rendered in the DOM when playing a video track so iOS never suspends audio */}
+      {isVideo && (
+        <div className="relative w-full max-w-lg aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl border border-slate-800 group transition-all">
+          <video
+            ref={videoRef}
+            onTimeUpdate={onMediaTimeUpdate}
+            onLoadedMetadata={onMediaLoadedMetadata}
+            onEnded={onMediaEnded}
+            playsInline
+            webkit-playsinline="true"
+            className="w-full h-full object-contain"
+          />
 
-        {/* Video Overlay Controls */}
-        <div className="absolute top-3 right-3 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-950/70 backdrop-blur-md p-1.5 rounded-xl border border-slate-800">
-          {isPiPAvailable && (
+          {/* Video Overlay Controls */}
+          <div className="absolute top-3 right-3 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-950/70 backdrop-blur-md p-1.5 rounded-xl border border-slate-800">
+            {isPiPAvailable && (
+              <button
+                onClick={onTogglePiP}
+                title="Picture-in-Picture"
+                className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+              >
+                <PictureInPicture2 className="w-4 h-4" />
+              </button>
+            )}
             <button
-              onClick={onTogglePiP}
-              title="Picture-in-Picture"
+              onClick={() => {
+                if (videoRef.current) {
+                  if (document.fullscreenElement) {
+                    document.exitFullscreen().catch(console.warn);
+                  } else {
+                    videoRef.current.requestFullscreen().catch(console.warn);
+                  }
+                }
+              }}
+              title="Toggle Fullscreen"
               className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
             >
-              <PictureInPicture2 className="w-4 h-4" />
+              <Maximize2 className="w-4 h-4" />
             </button>
-          )}
-          <button
-            onClick={() => {
-              if (videoRef.current) {
-                if (document.fullscreenElement) {
-                  document.exitFullscreen().catch(console.warn);
-                } else {
-                  videoRef.current.requestFullscreen().catch(console.warn);
-                }
-              }
-            }}
-            title="Toggle Fullscreen"
-            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
-          >
-            <Maximize2 className="w-4 h-4" />
-          </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Audio / Vinyl / Lyrics Display (Shown when not video) */}
       {!isVideo && (

@@ -9,11 +9,12 @@ import {
   Shuffle,
   Sun,
   PictureInPicture2,
-  Gauge
+  Gauge,
+  ChevronDown
 } from 'lucide-react';
 import { formatTime } from '../utils/formatters';
 
-const PLAYBACK_SPEEDS = [0.5, 1.0, 1.25, 1.5, 2.0];
+const PLAYBACK_SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 
 export default function PlayerControls({
   currentTrack,
@@ -36,12 +37,6 @@ export default function PlayerControls({
   onTogglePiP
 }) {
   const [showBrightnessSlider, setShowBrightnessSlider] = useState(false);
-
-  const cyclePlaybackRate = () => {
-    const currentIndex = PLAYBACK_SPEEDS.indexOf(playbackRate);
-    const nextIndex = currentIndex === -1 ? 1 : (currentIndex + 1) % PLAYBACK_SPEEDS.length;
-    onChangePlaybackRate(PLAYBACK_SPEEDS[nextIndex]);
-  };
 
   return (
     <div className="w-full max-w-md px-2 flex flex-col items-center">
@@ -131,17 +126,29 @@ export default function PlayerControls({
         </button>
       </div>
 
-      {/* Auxiliary Controls: Speed, PiP, Brightness Slider */}
+      {/* Auxiliary Controls: Speed Selector, PiP, Brightness Slider & Direct Input */}
       <div className="flex items-center justify-between w-full max-w-xs mt-4 px-2 py-1.5 rounded-2xl bg-slate-900/60 border border-slate-800/70 text-xs">
-        {/* Playback Speed Cycle Button */}
-        <button
-          onClick={cyclePlaybackRate}
-          className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white font-mono font-medium transition-colors"
-          title="Change playback speed"
-        >
-          <Gauge className="w-3.5 h-3.5 text-indigo-400" />
-          <span>{playbackRate}x</span>
-        </button>
+        {/* Playback Speed Dropdown Selector */}
+        <div className="relative flex items-center">
+          <div className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-800/70 hover:bg-slate-800 border border-slate-700/60 text-slate-300 font-mono text-xs transition-colors focus-within:border-emerald-500">
+            <Gauge className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <select
+              value={playbackRate}
+              onChange={(e) => onChangePlaybackRate(parseFloat(e.target.value))}
+              aria-label="Select playback speed"
+              className="bg-transparent text-xs font-mono font-semibold text-slate-200 focus:outline-none cursor-pointer appearance-none pr-3"
+            >
+              <option value="0.5" className="bg-slate-900 text-slate-100">0.5x</option>
+              <option value="0.75" className="bg-slate-900 text-slate-100">0.75x</option>
+              <option value="1" className="bg-slate-900 text-slate-100">1.0x</option>
+              <option value="1.25" className="bg-slate-900 text-slate-100">1.25x</option>
+              <option value="1.5" className="bg-slate-900 text-slate-100">1.5x</option>
+              <option value="1.75" className="bg-slate-900 text-slate-100">1.75x</option>
+              <option value="2" className="bg-slate-900 text-slate-100">2.0x</option>
+            </select>
+            <ChevronDown className="w-3 h-3 text-slate-400 -ml-2 pointer-events-none" />
+          </div>
+        </div>
 
         {/* Picture in Picture Button (Active if video file) */}
         {(currentTrack?.isVideo || /\.(mp4|mov|webm|m4v)$/i.test(currentTrack?.name || '')) && isPiPAvailable && (
@@ -155,7 +162,7 @@ export default function PlayerControls({
           </button>
         )}
 
-        {/* Software Brightness Quick Toggle/Slider */}
+        {/* Software Brightness Quick Toggle/Slider & Number Input */}
         <div className="relative flex items-center">
           <button
             onClick={() => setShowBrightnessSlider(!showBrightnessSlider)}
@@ -170,21 +177,58 @@ export default function PlayerControls({
             <span className="font-mono">{brightness}%</span>
           </button>
 
-          {/* Brightness Popover Slider */}
+          {/* Brightness Popover with direct typing input, slider & presets */}
           {showBrightnessSlider && (
-            <div className="absolute bottom-9 right-0 p-3 bg-slate-900/95 border border-slate-700 rounded-2xl shadow-2xl backdrop-blur-md flex flex-col gap-1.5 w-44 z-30">
-              <div className="flex items-center justify-between text-[11px] text-slate-400">
-                <span>Overlay Brightness</span>
-                <span className="font-mono text-amber-300 font-semibold">{brightness}%</span>
+            <div className="absolute bottom-11 right-0 p-3 bg-slate-900/95 border border-slate-700 rounded-2xl shadow-2xl backdrop-blur-md flex flex-col gap-2.5 w-52 z-30">
+              <div className="flex items-center justify-between text-[11px] text-slate-300">
+                <span className="font-medium flex items-center gap-1">
+                  <Sun className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Brightness</span>
+                </span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={brightness}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      if (!isNaN(val)) {
+                        onChangeBrightness(Math.max(0, Math.min(100, val)));
+                      }
+                    }}
+                    className="w-12 px-1.5 py-0.5 rounded-lg bg-slate-800 text-amber-300 font-mono text-xs font-semibold text-center border border-amber-500/40 focus:outline-none focus:border-amber-400"
+                  />
+                  <span className="text-xs text-slate-400">%</span>
+                </div>
               </div>
+
+              {/* Range Scrubber */}
               <input
                 type="range"
-                min="10"
+                min="0"
                 max="100"
                 value={brightness}
                 onChange={(e) => onChangeBrightness(Number(e.target.value))}
                 className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-amber-400"
               />
+
+              {/* Quick Presets */}
+              <div className="flex items-center justify-between gap-1 pt-1 border-t border-slate-800">
+                {[25, 50, 75, 100].map((preset) => (
+                  <button
+                    key={preset}
+                    onClick={() => onChangeBrightness(preset)}
+                    className={`flex-1 py-1 rounded-lg text-[10px] font-mono transition-colors ${
+                      brightness === preset
+                        ? 'bg-amber-500/30 text-amber-200 border border-amber-500/40 font-bold'
+                        : 'bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {preset}%
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -192,4 +236,5 @@ export default function PlayerControls({
     </div>
   );
 }
+
 

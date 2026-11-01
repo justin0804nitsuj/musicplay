@@ -58,7 +58,7 @@ export default function TrackItem({
         }}
         className={`relative flex items-center justify-between p-2.5 rounded-2xl cursor-pointer transition-colors ${
           isCurrent
-            ? 'bg-indigo-600/20 border border-indigo-500/40 text-white backdrop-blur-md'
+            ? 'bg-emerald-950/40 border border-emerald-500/50 text-white backdrop-blur-md shadow-lg shadow-emerald-950/40'
             : 'bg-slate-900/80 hover:bg-slate-800/80 text-slate-300 border border-slate-800/60'
         }`}
       >
@@ -69,7 +69,7 @@ export default function TrackItem({
             {...attributes}
             {...listeners}
             onClick={(e) => e.stopPropagation()}
-            className="p-1 text-slate-500 hover:text-slate-300 active:text-indigo-400 cursor-grab touch-none"
+            className="p-1 text-slate-500 hover:text-slate-300 active:text-emerald-400 cursor-grab touch-none"
             title="Drag to reorder"
             aria-label="Drag to reorder"
           >
@@ -77,7 +77,9 @@ export default function TrackItem({
           </button>
 
           {/* Thumbnail / Cover Art */}
-          <div className="relative w-9 h-9 rounded-xl bg-slate-800 overflow-hidden shrink-0 flex items-center justify-center border border-slate-700/50">
+          <div className={`relative w-9 h-9 rounded-xl bg-slate-800 overflow-hidden shrink-0 flex items-center justify-center border transition-all ${
+            isCurrent ? 'border-emerald-500/60 ring-2 ring-emerald-500/30' : 'border-slate-700/50'
+          }`}>
             {track.coverArt ? (
               <img
                 src={track.coverArt}
@@ -86,17 +88,17 @@ export default function TrackItem({
                 loading="lazy"
               />
             ) : track.isVideo ? (
-              <Video className="w-4 h-4 text-indigo-400" />
+              <Video className={`w-4 h-4 ${isCurrent ? 'text-emerald-400' : 'text-slate-400'}`} />
             ) : (
-              <Music className="w-4 h-4 text-slate-400" />
+              <Music className={`w-4 h-4 ${isCurrent ? 'text-emerald-400' : 'text-slate-400'}`} />
             )}
 
-            {/* Playing equalizer indicator overlay */}
+            {/* Playing equalizer indicator overlay (Green) */}
             {isCurrent && isPlaying && (
-              <div className="absolute inset-0 bg-indigo-950/70 backdrop-blur-[1px] flex items-end justify-center gap-0.5 pb-1">
-                <span className="w-0.5 h-3 bg-indigo-400 animate-pulse" />
-                <span className="w-0.5 h-4 bg-indigo-400 animate-pulse delay-75" />
-                <span className="w-0.5 h-2 bg-indigo-400 animate-pulse delay-150" />
+              <div className="absolute inset-0 bg-emerald-950/80 backdrop-blur-[1px] flex items-end justify-center gap-0.5 pb-1">
+                <span className="w-0.5 h-3 bg-emerald-400 animate-pulse" />
+                <span className="w-0.5 h-4 bg-emerald-400 animate-pulse delay-75" />
+                <span className="w-0.5 h-2 bg-emerald-400 animate-pulse delay-150" />
               </div>
             )}
           </div>
@@ -104,9 +106,14 @@ export default function TrackItem({
           {/* Title & Metadata */}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
-              <p className={`text-xs font-semibold truncate ${isCurrent ? 'text-indigo-300' : 'text-slate-200'}`}>
+              <p className={`text-xs font-semibold truncate ${isCurrent ? 'text-emerald-400 font-bold' : 'text-slate-200'}`}>
                 {track.title}
               </p>
+              {isCurrent && (
+                <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 text-[9px] font-medium border border-emerald-500/30 shrink-0">
+                  {isPlaying ? 'Playing' : 'Paused'}
+                </span>
+              )}
               {track.lyrics && (
                 <span
                   title="Has synchronized lyrics"
@@ -116,7 +123,7 @@ export default function TrackItem({
                 </span>
               )}
             </div>
-            <p className="text-[11px] text-slate-400 truncate flex items-center gap-1.5">
+            <p className={`text-[11px] truncate flex items-center gap-1.5 ${isCurrent ? 'text-emerald-300/80' : 'text-slate-400'}`}>
               <span>{track.artist}</span>
               <span>•</span>
               <span className="font-mono">{formatSize(track.size)}</span>

@@ -22,6 +22,27 @@ import {
 } from './services/storage';
 import { CheckCircle2, AlertCircle, Info } from 'lucide-react';
 
+// iOS Safari Audio Session Priming:
+// Permanently unlocks iOS background audio playback on user gesture
+const primeAudioSession = () => {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx && !window._iosAudioUnlocked) {
+      const ctx = new AudioCtx();
+      ctx.resume().then(() => {
+        const buffer = ctx.createBuffer(1, 1, 22050);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.start(0);
+        window._iosAudioUnlocked = true;
+      }).catch(() => {});
+    }
+  } catch {
+    // Ignore
+  }
+};
+
 export default function App() {
   // Database & Playlist states
   const [playlists, setPlaylists] = useState([{ id: DEFAULT_PLAYLIST_ID, name: 'My Music' }]);
@@ -180,11 +201,12 @@ export default function App() {
     init();
 
     // Check PiP capability (Standard W3C + iOS Safari WebKit Presentation Mode)
+    const isIOSDevice = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
     const hasStandardPiP = typeof document !== 'undefined' && Boolean(document.pictureInPictureEnabled);
-    const hasWebKitPiP = typeof window !== 'undefined' && (
+    const hasWebKitPiP = isIOSDevice || (typeof window !== 'undefined' && (
       (window.HTMLVideoElement && typeof window.HTMLVideoElement.prototype.webkitSetPresentationMode === 'function') ||
       Boolean(videoRef.current?.webkitSetPresentationMode)
-    );
+    ));
     if (hasStandardPiP || hasWebKitPiP) {
       setIsPiPAvailable(true);
     }
@@ -240,6 +262,9 @@ export default function App() {
   // 4. Track Navigation & Playback Handlers
   // -------------------------------------------------------------
   const playTrackAtIndex = useCallback((index, autoPlay = true) => {
+    // Prime iOS background audio session on user gesture
+    primeAudioSession();
+
     const list = tracksRef.current;
     if (index < 0 || index >= list.length) return;
 
@@ -260,18 +285,20 @@ export default function App() {
         audioRef.current.removeAttribute('src');
         audioRef.current.load();
       }
-      // 2. Video engine: set ObjectURL & play
-      if (videoRef.current && url) {
-        videoRef.current.src = url;
-        videoRef.current.playbackRate = playbackRateRef.current;
-        videoRef.current.currentTime = 0;
-        if (autoPlay) {
-          setIsPlaying(true);
-          videoRef.current.play().catch((err) => {
-            console.warn('Video playback error (iOS interaction required):', err);
-          });
+      // 2. Video engine: wait tick for conditional DOM mount, then set ObjectURL & play
+      setTimeout(() => {
+        if (videoRef.current && url) {
+          videoRef.current.src = url;
+          videoRef.current.playbackRate = playbackRateRef.current;
+          videoRef.current.currentTime = 0;
+          if (autoPlay) {
+            setIsPlaying(true);
+            videoRef.current.play().catch((err) => {
+              console.warn('Video playback error (iOS interaction required):', err);
+            });
+          }
         }
-      }
+      }, 50);
     } else {
       // 1. Video engine: PAUSE, remove source & reload so iOS doesn't aggressively suspend background audio
       if (videoRef.current) {
@@ -283,7 +310,6 @@ export default function App() {
       if (audioRef.current && url) {
         audioRef.current.src = url;
         audioRef.current.playbackRate = playbackRateRef.current;
-        audioRef.current.currentTime = 0;
         if (autoPlay) {
           setIsPlaying(true);
           audioRef.current.play().catch((err) => {
@@ -292,7 +318,7 @@ export default function App() {
         }
       }
     }
-  }, [loadTrackUrl]);
+  }, [loadTrackUrl, isVideoTrack]);
 
   const handleNext = useCallback(() => {
     const list = tracksRef.current;
@@ -359,6 +385,7 @@ export default function App() {
   }, [playTrackAtIndex, getActiveMediaElement]);
 
   const togglePlay = useCallback(() => {
+    primeAudioSession();
     const isVideo = isVideoTrack(currentTrack);
     const mediaEl = isVideo ? videoRef.current : audioRef.current;
     if (!mediaEl || !currentTrack) return;
@@ -427,24 +454,25 @@ export default function App() {
     if (!isVideoTrack(currentTrack)) return;
 
     try {
+      // 1. Apple WebKit Presentation Mode (iOS Safari)
       if (typeof video.webkitSetPresentationMode === 'function') {
-        // iOS Safari specific WebKit Presentation Mode
         const currentMode = video.webkitPresentationMode;
-        video.webkitSetPresentationMode(
-          currentMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture'
-        );
-      } else if (document.pictureInPictureEnabled) {
-        // Standard W3C API
+        const targetMode = currentMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture';
+        video.webkitSetPresentationMode(targetMode);
+      } else if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function') {
+        // 2. Standard W3C API (Desktop / Chrome / Safari 13.1+)
         if (document.pictureInPictureElement) {
           await document.exitPictureInPicture();
         } else {
           await video.requestPictureInPicture();
         }
+      } else if (typeof video.webkitEnterFullscreen === 'function') {
+        video.webkitEnterFullscreen();
       }
     } catch (err) {
       console.warn('Picture-in-Picture error:', err);
     }
-  }, [currentTrack]);
+  }, [currentTrack, isVideoTrack]);
 
   // -------------------------------------------------------------
   // 5. Media Events Handlers
@@ -824,12 +852,13 @@ export default function App() {
       {/* Software Brightness Overlay (CSS full-screen overlay) */}
       <BrightnessOverlay brightness={brightness} />
 
-      {/* Hidden Audio Element for iOS background audio */}
+      {/* Audio Element for iOS background audio */}
       <audio
         ref={audioRef}
         onTimeUpdate={handleMediaTimeUpdate}
         onLoadedMetadata={handleMediaLoadedMetadata}
         onEnded={handleMediaEnded}
+        onPlay={() => setIsPlaying(true)}
         playsInline
         preload="auto"
       />
