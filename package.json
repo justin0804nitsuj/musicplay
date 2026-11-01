@@ -9,6 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "framer-motion": "^14.9.0",
+    "jsmediatags": "^3.9.7",
     "localforage": "^1.10.0",
     "lucide-react": "^0.475.0",
     "react": "^18.3.1",

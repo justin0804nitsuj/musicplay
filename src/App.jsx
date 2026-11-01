@@ -1,431 +1,674 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import localforage from 'localforage';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import Header from './components/Header';
+import MediaDisplay from './components/MediaDisplay';
+import PlayerControls from './components/PlayerControls';
+import TrackList from './components/TrackList';
+import BrightnessOverlay from './components/BrightnessOverlay';
+import { parseID3Tags } from './utils/id3';
+import { cleanFileName } from './utils/formatters';
 import {
-  Play,
-  Pause,
-  SkipBack,
-  SkipForward,
-  RotateCcw,
-  Repeat,
-  Repeat1,
-  Shuffle,
-  Volume2,
-  VolumeX,
-  Upload,
-  Trash2,
-  Music,
-  ListMusic,
-  Sparkles,
-  Info,
-  CheckCircle2,
-  AlertCircle
-} from 'lucide-react';
-
-// Configure IndexedDB via localforage
-const db = localforage.createInstance({
-  name: 'iOSLocalMusicPWA',
-  storeName: 'audio_library',
-  description: 'Persistent offline storage for local audio tracks on iOS'
-});
-
-// Format seconds into MM:SS
-const formatTime = (seconds) => {
-  if (isNaN(seconds) || seconds === null) return '00:00';
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
-};
-
-// Format file size in MB
-const formatSize = (bytes) => {
-  if (!bytes) return '';
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-};
-
-// Clean song title from filename
-const cleanFileName = (filename) => {
-  return filename.replace(/\.[^/.]+$/, '').replace(/^[0-9\s-_.]+/, '').trim() || filename;
-};
+  initializeDatabase,
+  getTracksForPlaylist,
+  saveTrack,
+  updateTrack,
+  deleteTrackFromDB,
+  saveTracksOrder,
+  createPlaylistInDB,
+  deletePlaylistFromDB,
+  clearPlaylistTracksFromDB,
+  getSetting,
+  setSetting,
+  DEFAULT_PLAYLIST_ID
+} from './services/storage';
+import { CheckCircle2, AlertCircle, Info } from 'lucide-react';
 
 export default function App() {
-  // Audio state
-  const [playlist, setPlaylist] = useState([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  // Database & Playlist states
+  const [playlists, setPlaylists] = useState([{ id: DEFAULT_PLAYLIST_ID, name: 'My Music' }]);
+  const [activePlaylistId, setActivePlaylistId] = useState(DEFAULT_PLAYLIST_ID);
+  const [tracks, setTracks] = useState([]);
+  const [isLoadingTracks, setIsLoadingTracks] = useState(true);
+
+  // Playback states
+  const [currentIndex, setCurrentIndex] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(1);
-  const [isMuted, setIsMuted] = useState(false);
-  const [loopMode, setLoopMode] = useState('all'); // 'all' | 'one' | 'none'
+  const [playbackRate, setPlaybackRate] = useState(1.0);
+  const [repeatMode, setRepeatMode] = useState('all'); // 'none' | 'all' | 'one'
   const [isShuffle, setIsShuffle] = useState(false);
-  const [isLoadingStorage, setIsLoadingStorage] = useState(true);
-  const [showInstallPrompt, setShowInstallPrompt] = useState(false);
-  const [statusMessage, setStatusMessage] = useState('');
+  const [shuffledIndices, setShuffledIndices] = useState([]);
+  const [shuffleCursor, setShuffleCursor] = useState(0);
 
-  // DOM Refs
+  // Software Brightness state (0 - 100)
+  const [brightness, setBrightness] = useState(100);
+
+  // Object URL Memory Management state (LAZY LOADING: ONLY FOR CURRENT TRACK)
+  const [activeMediaUrl, setActiveMediaUrl] = useState(null);
+  const activeMediaUrlRef = useRef(null);
+
+  // Notifications & UI states
+  const [statusMessage, setStatusMessage] = useState('');
+  const [showInstallPrompt, setShowInstallPrompt] = useState(false);
+  const [isPiPAvailable, setIsPiPAvailable] = useState(false);
+
+  // DOM Media Elements
   const audioRef = useRef(null);
+  const videoRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Keep a reference to current playlist and index for MediaSession handlers to avoid stale closures
-  const playlistRef = useRef(playlist);
+  // Synchronized refs to avoid stale closures in event handlers
+  const tracksRef = useRef(tracks);
   const currentIndexRef = useRef(currentIndex);
-  const loopModeRef = useRef(loopMode);
+  const repeatModeRef = useRef(repeatMode);
   const isShuffleRef = useRef(isShuffle);
+  const shuffledIndicesRef = useRef(shuffledIndices);
+  const shuffleCursorRef = useRef(shuffleCursor);
+  const playbackRateRef = useRef(playbackRate);
 
-  useEffect(() => {
-    playlistRef.current = playlist;
-  }, [playlist]);
+  useEffect(() => { tracksRef.current = tracks; }, [tracks]);
+  useEffect(() => { currentIndexRef.current = currentIndex; }, [currentIndex]);
+  useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
+  useEffect(() => { isShuffleRef.current = isShuffle; }, [isShuffle]);
+  useEffect(() => { shuffledIndicesRef.current = shuffledIndices; }, [shuffledIndices]);
+  useEffect(() => { shuffleCursorRef.current = shuffleCursor; }, [shuffleCursor]);
+  useEffect(() => { playbackRateRef.current = playbackRate; }, [playbackRate]);
 
-  useEffect(() => {
-    currentIndexRef.current = currentIndex;
-  }, [currentIndex]);
-
-  useEffect(() => {
-    loopModeRef.current = loopMode;
-  }, [loopMode]);
-
-  useEffect(() => {
-    isShuffleRef.current = isShuffle;
-  }, [isShuffle]);
+  const currentTrack = tracks[currentIndex] || null;
 
   const showNotification = (msg) => {
     setStatusMessage(msg);
     setTimeout(() => setStatusMessage(''), 3000);
   };
 
+  // Active media DOM element selector (Audio vs Video)
+  const getActiveMediaElement = useCallback(() => {
+    if (currentTrack?.isVideo) {
+      return videoRef.current;
+    }
+    return audioRef.current;
+  }, [currentTrack]);
+
   // -------------------------------------------------------------
-  // 1. Memory Management & Initial Load from IndexedDB
+  // 1. Critical Memory Management: Lazy Loading Object URLs
+  // -------------------------------------------------------------
+  const revokeActiveUrl = useCallback(() => {
+    if (activeMediaUrlRef.current) {
+      URL.revokeObjectURL(activeMediaUrlRef.current);
+      activeMediaUrlRef.current = null;
+      setActiveMediaUrl(null);
+    }
+  }, []);
+
+  const loadTrackUrl = useCallback((track) => {
+    // Revoke old URL first to free memory immediately
+    revokeActiveUrl();
+
+    if (!track || !track.blob) return null;
+
+    const newUrl = URL.createObjectURL(track.blob);
+    activeMediaUrlRef.current = newUrl;
+    setActiveMediaUrl(newUrl);
+    return newUrl;
+  }, [revokeActiveUrl]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      revokeActiveUrl();
+    };
+  }, [revokeActiveUrl]);
+
+  // -------------------------------------------------------------
+  // 2. Initial Storage Load & Preferences
   // -------------------------------------------------------------
   useEffect(() => {
     let mounted = true;
 
-    async function loadStoredTracks() {
+    async function init() {
       try {
-        setIsLoadingStorage(true);
-        const storedTracks = [];
+        const loadedPlaylists = await initializeDatabase();
+        const savedPlaylistId = await getSetting('activePlaylistId', DEFAULT_PLAYLIST_ID);
+        const savedBrightness = await getSetting('softwareBrightness', 100);
 
-        await db.iterate((value, key) => {
-          if (value && value.blob) {
-            // Recreate in-memory Object URL from persistent Blob
-            const blobUrl = URL.createObjectURL(value.blob);
-            storedTracks.push({
-              id: key,
-              name: value.name,
-              title: value.title || cleanFileName(value.name),
-              artist: value.artist || 'Local Audio',
-              size: value.size,
-              type: value.type,
-              url: blobUrl,
-              blob: value.blob
-            });
-          }
-        });
+        if (!mounted) return;
 
+        setPlaylists(loadedPlaylists);
+        setBrightness(savedBrightness);
+
+        const initialPlId = loadedPlaylists.some((p) => p.id === savedPlaylistId)
+          ? savedPlaylistId
+          : loadedPlaylists[0]?.id || DEFAULT_PLAYLIST_ID;
+
+        setActivePlaylistId(initialPlId);
+
+        // Load tracks for this initial playlist
+        setIsLoadingTracks(true);
+        const storedTracks = await getTracksForPlaylist(initialPlId);
         if (mounted) {
-          setPlaylist(storedTracks);
-          if (storedTracks.length > 0) {
-            setCurrentIndex(0);
-          }
+          setTracks(storedTracks);
+          setIsLoadingTracks(false);
         }
       } catch (err) {
-        console.error('Failed to load tracks from IndexedDB:', err);
-      } finally {
-        if (mounted) {
-          setIsLoadingStorage(false);
-        }
+        console.error('Initialization failed:', err);
+        if (mounted) setIsLoadingTracks(false);
       }
     }
 
-    loadStoredTracks();
+    init();
 
-    // Check if running in iOS standalone mode
+    // Check PiP capability
+    if (document.pictureInPictureEnabled) {
+      setIsPiPAvailable(true);
+    }
+
+    // Check iOS standalone mode
     const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
     if (isIOS && !isStandalone) {
       setShowInstallPrompt(true);
     }
 
-    // Cleanup: revoke all active object URLs on unmount to prevent iOS Safari memory leaks
     return () => {
       mounted = false;
-      playlistRef.current.forEach((track) => {
-        if (track.url) {
-          URL.revokeObjectURL(track.url);
-        }
-      });
     };
   }, []);
 
   // -------------------------------------------------------------
-  // 2. Playback Navigation Handlers (Prev / Next / Loop)
+  // 3. Shuffle Array Generator
   // -------------------------------------------------------------
-  const playTrackAtIndex = useCallback((index) => {
-    const list = playlistRef.current;
-    if (index < 0 || index >= list.length) return;
-
-    setCurrentIndex(index);
-    setIsPlaying(true);
-
-    if (audioRef.current) {
-      audioRef.current.currentTime = 0;
-      // On iOS, play() returns a promise and must be triggered by user or unbroken audio chain
-      audioRef.current.play().catch((err) => {
-        console.warn('Playback initiation error:', err);
-      });
+  const generateShuffledQueue = useCallback((length, activeIdx = 0) => {
+    if (length <= 0) return [];
+    const indices = Array.from({ length }, (_, i) => i);
+    // Fisher-Yates shuffle
+    for (let i = indices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [indices[i], indices[j]] = [indices[j], indices[i]];
     }
+    // Put current playing index at the front of the shuffle queue
+    if (activeIdx >= 0) {
+      const currentPos = indices.indexOf(activeIdx);
+      if (currentPos > 0) {
+        indices.splice(currentPos, 1);
+        indices.unshift(activeIdx);
+      }
+    }
+    return indices;
   }, []);
 
+  // When shuffle is toggled on
+  const handleToggleShuffle = useCallback(() => {
+    setIsShuffle((prev) => {
+      const nextShuffle = !prev;
+      if (nextShuffle && tracksRef.current.length > 0) {
+        const queue = generateShuffledQueue(tracksRef.current.length, currentIndexRef.current);
+        setShuffledIndices(queue);
+        setShuffleCursor(0);
+      }
+      return nextShuffle;
+    });
+  }, [generateShuffledQueue]);
+
+  // -------------------------------------------------------------
+  // 4. Track Navigation & Playback Handlers
+  // -------------------------------------------------------------
+  const playTrackAtIndex = useCallback((index, autoPlay = true) => {
+    const list = tracksRef.current;
+    if (index < 0 || index >= list.length) return;
+
+    const targetTrack = list[index];
+    setCurrentIndex(index);
+    setCurrentTime(0);
+    setDuration(0);
+
+    // Create Lazy Object URL only for this selected track
+    const url = loadTrackUrl(targetTrack);
+
+    if (targetTrack.isVideo) {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.removeAttribute('src');
+      }
+      if (videoRef.current && url) {
+        videoRef.current.src = url;
+        videoRef.current.playbackRate = playbackRateRef.current;
+        videoRef.current.currentTime = 0;
+        if (autoPlay) {
+          setIsPlaying(true);
+          videoRef.current.play().catch((err) => {
+            console.warn('Video playback error:', err);
+          });
+        }
+      }
+    } else {
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+      }
+      if (audioRef.current && url) {
+        audioRef.current.src = url;
+        audioRef.current.playbackRate = playbackRateRef.current;
+        audioRef.current.currentTime = 0;
+        if (autoPlay) {
+          setIsPlaying(true);
+          audioRef.current.play().catch((err) => {
+            console.warn('Audio playback error (interaction required on iOS):', err);
+          });
+        }
+      }
+    }
+  }, [loadTrackUrl]);
+
   const handleNext = useCallback(() => {
-    const list = playlistRef.current;
+    const list = tracksRef.current;
     if (list.length === 0) return;
 
-    if (isShuffleRef.current && list.length > 1) {
-      let randIndex;
-      do {
-        randIndex = Math.floor(Math.random() * list.length);
-      } while (randIndex === currentIndexRef.current);
-      playTrackAtIndex(randIndex);
+    if (isShuffleRef.current && shuffledIndicesRef.current.length > 0) {
+      let nextCursor = shuffleCursorRef.current + 1;
+      if (nextCursor >= shuffledIndicesRef.current.length) {
+        if (repeatModeRef.current === 'none') {
+          setIsPlaying(false);
+          return;
+        }
+        // Reshuffle queue for seamless loop
+        const newQueue = generateShuffledQueue(list.length, currentIndexRef.current);
+        setShuffledIndices(newQueue);
+        nextCursor = 0;
+      }
+      setShuffleCursor(nextCursor);
+      const nextIdx = shuffledIndicesRef.current[nextCursor];
+      playTrackAtIndex(nextIdx);
       return;
     }
 
     const nextIndex = currentIndexRef.current + 1;
-    // Seamless infinite looping: if last song ended, loop back to index 0
     if (nextIndex >= list.length) {
+      if (repeatModeRef.current === 'none') {
+        setIsPlaying(false);
+        return;
+      }
       playTrackAtIndex(0);
     } else {
       playTrackAtIndex(nextIndex);
     }
-  }, [playTrackAtIndex]);
+  }, [playTrackAtIndex, generateShuffledQueue]);
 
   const handlePrev = useCallback(() => {
-    const list = playlistRef.current;
+    const list = tracksRef.current;
     if (list.length === 0) return;
 
-    // If more than 3 seconds in, restart track
-    if (audioRef.current && audioRef.current.currentTime > 3) {
-      audioRef.current.currentTime = 0;
+    const mediaEl = getActiveMediaElement();
+    if (mediaEl && mediaEl.currentTime > 3) {
+      mediaEl.currentTime = 0;
+      setCurrentTime(0);
+      return;
+    }
+
+    if (isShuffleRef.current && shuffledIndicesRef.current.length > 0) {
+      let prevCursor = shuffleCursorRef.current - 1;
+      if (prevCursor < 0) {
+        prevCursor = shuffledIndicesRef.current.length - 1;
+      }
+      setShuffleCursor(prevCursor);
+      const prevIdx = shuffledIndicesRef.current[prevCursor];
+      playTrackAtIndex(prevIdx);
       return;
     }
 
     const prevIndex = currentIndexRef.current - 1;
     if (prevIndex < 0) {
-      // Loop to end of queue
       playTrackAtIndex(list.length - 1);
     } else {
       playTrackAtIndex(prevIndex);
     }
-  }, [playTrackAtIndex]);
+  }, [playTrackAtIndex, getActiveMediaElement]);
 
-  const togglePlay = () => {
-    if (!audioRef.current || playlist.length === 0) return;
+  const togglePlay = useCallback(() => {
+    const mediaEl = getActiveMediaElement();
+    if (!mediaEl || !currentTrack) return;
 
     if (isPlaying) {
-      audioRef.current.pause();
+      mediaEl.pause();
       setIsPlaying(false);
     } else {
-      audioRef.current.play().then(() => {
+      mediaEl.play().then(() => {
         setIsPlaying(true);
       }).catch((err) => {
         console.warn('Playback error:', err);
       });
     }
-  };
+  }, [currentTrack, isPlaying, getActiveMediaElement]);
 
-  // -------------------------------------------------------------
-  // 3. Audio Element Events (onEnded, onTimeUpdate, etc.)
-  // -------------------------------------------------------------
-  const handleAudioEnded = () => {
-    const mode = loopModeRef.current;
-    if (mode === 'one') {
-      if (audioRef.current) {
-        audioRef.current.currentTime = 0;
-        audioRef.current.play().catch(console.warn);
-      }
-    } else {
-      // 'all' or 'none': continue infinite looping through playlist
-      handleNext();
+  const handleSeek = useCallback((seekTime) => {
+    const mediaEl = getActiveMediaElement();
+    setCurrentTime(seekTime);
+    if (mediaEl) {
+      mediaEl.currentTime = seekTime;
     }
-  };
+  }, [getActiveMediaElement]);
 
-  const handleTimeUpdate = () => {
-    if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime);
+  const handleToggleRepeat = useCallback(() => {
+    setRepeatMode((prev) => {
+      if (prev === 'all') return 'one';
+      if (prev === 'one') return 'none';
+      return 'all';
+    });
+  }, []);
 
-      // Update MediaSession Position State for lock screen progress bar
-      if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
-        if (audioRef.current.duration && !isNaN(audioRef.current.duration)) {
-          try {
-            navigator.mediaSession.setPositionState({
-              duration: audioRef.current.duration,
-              playbackRate: audioRef.current.playbackRate || 1,
-              position: audioRef.current.currentTime
-            });
-          } catch {
-            // Safari occasionally throws if position is slightly higher than duration
-          }
+  const handleChangePlaybackRate = useCallback((rate) => {
+    setPlaybackRate(rate);
+    const mediaEl = getActiveMediaElement();
+    if (mediaEl) {
+      mediaEl.playbackRate = rate;
+    }
+  }, [getActiveMediaElement]);
+
+  const handleChangeBrightness = useCallback((val) => {
+    setBrightness(val);
+    setSetting('softwareBrightness', val);
+  }, []);
+
+  const handleTogglePiP = useCallback(async () => {
+    if (!videoRef.current) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else {
+        await videoRef.current.requestPictureInPicture();
+      }
+    } catch (err) {
+      console.warn('Picture-in-Picture error:', err);
+    }
+  }, []);
+
+  // -------------------------------------------------------------
+  // 5. Media Events Handlers
+  // -------------------------------------------------------------
+  const handleMediaTimeUpdate = () => {
+    const mediaEl = getActiveMediaElement();
+    if (!mediaEl) return;
+
+    setCurrentTime(mediaEl.currentTime);
+
+    // Update MediaSession lock screen scrubber
+    if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+      if (mediaEl.duration && !isNaN(mediaEl.duration)) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: mediaEl.duration,
+            playbackRate: mediaEl.playbackRate || 1,
+            position: Math.min(mediaEl.currentTime, mediaEl.duration)
+          });
+        } catch {
+          // Guard against floating point boundary issues
         }
       }
     }
   };
 
-  const handleLoadedMetadata = () => {
-    if (audioRef.current) {
-      setDuration(audioRef.current.duration);
+  const handleMediaLoadedMetadata = () => {
+    const mediaEl = getActiveMediaElement();
+    if (mediaEl && mediaEl.duration) {
+      setDuration(mediaEl.duration);
     }
   };
 
-  const handleSeek = (e) => {
-    const seekTime = parseFloat(e.target.value);
-    setCurrentTime(seekTime);
-    if (audioRef.current) {
-      audioRef.current.currentTime = seekTime;
+  const handleMediaEnded = () => {
+    if (repeatModeRef.current === 'one') {
+      const mediaEl = getActiveMediaElement();
+      if (mediaEl) {
+        mediaEl.currentTime = 0;
+        mediaEl.play().catch(console.warn);
+      }
+    } else {
+      handleNext();
     }
   };
 
   // -------------------------------------------------------------
-  // 4. Media Session API for iOS Lock Screen & Control Center
+  // 6. MediaSession API (Lock Screen & Control Center)
   // -------------------------------------------------------------
-  const currentTrack = playlist[currentIndex];
-
   useEffect(() => {
     if (!('mediaSession' in navigator) || !currentTrack) return;
 
+    const artwork = currentTrack.coverArt
+      ? [{ src: currentTrack.coverArt, sizes: '512x512', type: 'image/jpeg' }]
+      : [{ src: '/icon.svg', sizes: '512x512', type: 'image/svg+xml' }];
+
     navigator.mediaSession.metadata = new window.MediaMetadata({
-      title: currentTrack.title,
-      artist: currentTrack.artist || 'Offline PWA Player',
-      album: 'Local Library',
-      artwork: [
-        { src: '/icon.svg', sizes: '96x96', type: 'image/svg+xml' },
-        { src: '/icon.svg', sizes: '192x192', type: 'image/svg+xml' },
-        { src: '/icon.svg', sizes: '512x512', type: 'image/svg+xml' }
-      ]
+      title: currentTrack.title || 'Unknown Title',
+      artist: currentTrack.artist || 'Local Audio',
+      album: currentTrack.album || 'SonicWave Library',
+      artwork
     });
 
     navigator.mediaSession.setActionHandler('play', () => {
-      if (audioRef.current) {
-        audioRef.current.play();
+      const mediaEl = getActiveMediaElement();
+      if (mediaEl) {
+        mediaEl.play();
         setIsPlaying(true);
       }
     });
 
     navigator.mediaSession.setActionHandler('pause', () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
+      const mediaEl = getActiveMediaElement();
+      if (mediaEl) {
+        mediaEl.pause();
         setIsPlaying(false);
       }
     });
 
-    navigator.mediaSession.setActionHandler('previoustrack', () => {
-      handlePrev();
-    });
-
-    navigator.mediaSession.setActionHandler('nexttrack', () => {
-      handleNext();
-    });
+    navigator.mediaSession.setActionHandler('previoustrack', handlePrev);
+    navigator.mediaSession.setActionHandler('nexttrack', handleNext);
 
     navigator.mediaSession.setActionHandler('seekto', (details) => {
-      if (details.seekTime && audioRef.current) {
-        audioRef.current.currentTime = details.seekTime;
+      if (details.seekTime !== undefined) {
+        handleSeek(details.seekTime);
       }
     });
 
     navigator.mediaSession.setActionHandler('seekbackward', (details) => {
-      if (audioRef.current) {
-        audioRef.current.currentTime = Math.max(audioRef.current.currentTime - (details.seekOffset || 10), 0);
+      const mediaEl = getActiveMediaElement();
+      if (mediaEl) {
+        handleSeek(Math.max(mediaEl.currentTime - (details.seekOffset || 10), 0));
       }
     });
 
     navigator.mediaSession.setActionHandler('seekforward', (details) => {
-      if (audioRef.current) {
-        audioRef.current.currentTime = Math.min(
-          audioRef.current.currentTime + (details.seekOffset || 10),
-          audioRef.current.duration || 0
-        );
+      const mediaEl = getActiveMediaElement();
+      if (mediaEl) {
+        handleSeek(Math.min(mediaEl.currentTime + (details.seekOffset || 10), mediaEl.duration || 0));
       }
     });
 
     navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
-  }, [currentTrack, isPlaying, handleNext, handlePrev]);
+  }, [currentTrack, isPlaying, handleNext, handlePrev, handleSeek, getActiveMediaElement]);
 
   // -------------------------------------------------------------
-  // 5. File Import & Storage with IndexedDB
+  // 7. Playlist Switching & Creation
+  // -------------------------------------------------------------
+  const handleSelectPlaylist = async (playlistId) => {
+    if (playlistId === activePlaylistId) return;
+
+    // Stop current playback and clean URL
+    const mediaEl = getActiveMediaElement();
+    if (mediaEl) mediaEl.pause();
+    revokeActiveUrl();
+    setIsPlaying(false);
+    setCurrentIndex(-1);
+    setCurrentTime(0);
+    setDuration(0);
+
+    setActivePlaylistId(playlistId);
+    setSetting('activePlaylistId', playlistId);
+
+    setIsLoadingTracks(true);
+    const loaded = await getTracksForPlaylist(playlistId);
+    setTracks(loaded);
+    setIsLoadingTracks(false);
+  };
+
+  const handleCreatePlaylist = async (name) => {
+    try {
+      const created = await createPlaylistInDB(name);
+      setPlaylists((prev) => [...prev, created]);
+      handleSelectPlaylist(created.id);
+      showNotification(`Created playlist "${created.name}"`);
+    } catch (err) {
+      console.error('Failed to create playlist:', err);
+    }
+  };
+
+  const handleDeletePlaylist = async (playlistId) => {
+    try {
+      await deletePlaylistFromDB(playlistId);
+      const updated = playlists.filter((p) => p.id !== playlistId);
+      setPlaylists(updated);
+      handleSelectPlaylist(DEFAULT_PLAYLIST_ID);
+      showNotification('Playlist deleted');
+    } catch (err) {
+      console.error('Failed to delete playlist:', err);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // 8. Track Import, ID3 Parsing & LRC Association
   // -------------------------------------------------------------
   const handleFileImport = async (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
 
-    const newTracks = [];
+    const audioVideoFiles = [];
+    const lrcFiles = [];
 
-    for (const file of files) {
+    files.forEach((file) => {
+      if (file.name.endsWith('.lrc')) {
+        lrcFiles.push(file);
+      } else {
+        audioVideoFiles.push(file);
+      }
+    });
+
+    const addedTracks = [];
+    let currentOrder = tracks.length;
+
+    // Process media files
+    for (const file of audioVideoFiles) {
       const trackId = `track_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
       const cleanTitle = cleanFileName(file.name);
+      const isVideo = file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(file.name);
+
+      // Extract ID3 metadata if audio file
+      let id3 = null;
+      if (!isVideo) {
+        id3 = await parseID3Tags(file);
+      }
 
       const trackRecord = {
+        id: trackId,
         name: file.name,
-        title: cleanTitle,
-        artist: 'Local Music',
+        title: id3?.title || cleanTitle,
+        artist: id3?.artist || 'Local Media',
+        album: id3?.album || '',
         size: file.size,
-        type: file.type || 'audio/mpeg',
-        blob: file // Save Blob directly in IndexedDB via localforage
+        type: file.type || (isVideo ? 'video/mp4' : 'audio/mpeg'),
+        isVideo,
+        coverArt: id3?.coverArt || null,
+        lyrics: null,
+        playlistId: activePlaylistId,
+        order: currentOrder++,
+        createdAt: Date.now(),
+        blob: file // Stored persistently in IndexedDB
       };
 
       try {
-        await db.setItem(trackId, trackRecord);
-        // Create an Object URL for immediate runtime playback
-        const url = URL.createObjectURL(file);
-        newTracks.push({
-          id: trackId,
-          ...trackRecord,
-          url
-        });
+        await saveTrack(trackRecord);
+        addedTracks.push(trackRecord);
       } catch (err) {
-        console.error(`Failed to store ${file.name} to IndexedDB:`, err);
+        console.error(`Failed to store ${file.name}:`, err);
       }
     }
 
-    if (newTracks.length > 0) {
-      setPlaylist((prev) => {
-        const updated = [...prev, ...newTracks];
-        return updated;
-      });
-      showNotification(`Added ${newTracks.length} song${newTracks.length > 1 ? 's' : ''} to offline library!`);
+    // Process uploaded LRC files: match by clean file name
+    for (const lrcFile of lrcFiles) {
+      try {
+        const text = await lrcFile.text();
+        const baseName = cleanFileName(lrcFile.name).toLowerCase();
+
+        // Check if matching any added or existing track
+        const target = [...addedTracks, ...tracks].find(
+          (t) => cleanFileName(t.name).toLowerCase() === baseName || t.title.toLowerCase() === baseName
+        );
+
+        if (target) {
+          target.lyrics = text;
+          await updateTrack(target.id, { lyrics: text });
+        } else if (currentTrack) {
+          // If no name match, attach to current playing track
+          currentTrack.lyrics = text;
+          await updateTrack(currentTrack.id, { lyrics: text });
+        }
+      } catch (err) {
+        console.warn('Error processing LRC file:', err);
+      }
     }
 
-    // Reset input so importing the same file again triggers onChange
+    if (addedTracks.length > 0) {
+      setTracks((prev) => [...prev, ...addedTracks]);
+      showNotification(`Added ${addedTracks.length} track${addedTracks.length > 1 ? 's' : ''}`);
+      if (currentIndex === -1) {
+        playTrackAtIndex(0, false);
+      }
+    } else if (lrcFiles.length > 0) {
+      showNotification('Synchronized lyrics updated!');
+    }
+
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
   // -------------------------------------------------------------
-  // 6. Delete Track & Clear All (with Object URL Revocation)
+  // 9. Reorder, Delete & Attach Lyrics
   // -------------------------------------------------------------
-  const handleDeleteTrack = async (e, trackId, indexToDelete) => {
-    e.stopPropagation();
+  const handleReorderTracks = async (reordered) => {
+    // Preserve current playing track index accurately
+    const currentPlayingId = currentTrack?.id;
+    setTracks(reordered);
 
-    const trackToDelete = playlist[indexToDelete];
-    if (trackToDelete && trackToDelete.url) {
-      // Memory cleanup: prevent iOS Safari jetsam crash
-      URL.revokeObjectURL(trackToDelete.url);
+    if (currentPlayingId) {
+      const newIdx = reordered.findIndex((t) => t.id === currentPlayingId);
+      if (newIdx !== -1) {
+        setCurrentIndex(newIdx);
+      }
     }
 
-    try {
-      await db.removeItem(trackId);
-    } catch (err) {
-      console.error('Error removing from IndexedDB:', err);
+    await saveTracksOrder(reordered);
+  };
+
+  const handleDeleteTrack = async (trackId, indexToDelete) => {
+    const isDeletingCurrent = indexToDelete === currentIndex;
+
+    if (isDeletingCurrent) {
+      const mediaEl = getActiveMediaElement();
+      if (mediaEl) mediaEl.pause();
+      revokeActiveUrl();
+      setIsPlaying(false);
     }
 
-    const updated = playlist.filter((_, idx) => idx !== indexToDelete);
-    setPlaylist(updated);
+    await deleteTrackFromDB(trackId);
 
-    if (indexToDelete === currentIndex) {
+    const updated = tracks.filter((t) => t.id !== trackId);
+    setTracks(updated);
+
+    if (isDeletingCurrent) {
       if (updated.length === 0) {
-        setIsPlaying(false);
+        setCurrentIndex(-1);
         setCurrentTime(0);
         setDuration(0);
       } else {
         const nextIdx = indexToDelete >= updated.length ? 0 : indexToDelete;
-        setCurrentIndex(nextIdx);
+        playTrackAtIndex(nextIdx, isPlaying);
       }
     } else if (indexToDelete < currentIndex) {
       setCurrentIndex((prev) => prev - 1);
@@ -434,86 +677,70 @@ export default function App() {
     showNotification('Track deleted');
   };
 
-  const handleClearAll = async () => {
-    if (playlist.length === 0) return;
-    if (!window.confirm('Are you sure you want to delete all saved tracks from offline storage?')) return;
+  const handleClearAllTracks = async () => {
+    if (tracks.length === 0) return;
+    if (!window.confirm('Delete all tracks from this playlist?')) return;
 
-    // Revoke all object URLs
-    playlist.forEach((track) => {
-      if (track.url) URL.revokeObjectURL(track.url);
-    });
+    const mediaEl = getActiveMediaElement();
+    if (mediaEl) mediaEl.pause();
+    revokeActiveUrl();
 
-    if (audioRef.current) {
-      audioRef.current.pause();
-    }
-
-    try {
-      await db.clear();
-      setPlaylist([]);
-      setCurrentIndex(0);
-      setIsPlaying(false);
-      setCurrentTime(0);
-      setDuration(0);
-      showNotification('All tracks cleared from device');
-    } catch (err) {
-      console.error('Failed to clear database:', err);
-    }
+    await clearPlaylistTracksFromDB(activePlaylistId);
+    setTracks([]);
+    setCurrentIndex(-1);
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    showNotification('Playlist cleared');
   };
 
-  const toggleLoopMode = () => {
-    if (loopMode === 'all') setLoopMode('one');
-    else if (loopMode === 'one') setLoopMode('none');
-    else setLoopMode('all');
+  const handleAttachLrc = async (trackId, lrcContent) => {
+    try {
+      await updateTrack(trackId, { lyrics: lrcContent });
+      setTracks((prev) =>
+        prev.map((t) => (t.id === trackId ? { ...t, lyrics: lrcContent } : t))
+      );
+      showNotification('Lyrics attached successfully!');
+    } catch (err) {
+      console.error('Failed to attach lyrics:', err);
+    }
   };
 
   return (
-    <div className="min-h-screen bg-[#090d16] text-slate-100 flex flex-col justify-between safe-top safe-bottom px-4 sm:px-6 md:px-12 max-w-4xl mx-auto selection:bg-indigo-500 selection:text-white">
-      {/* Hidden audio element */}
+    <div className="min-h-screen bg-[#090d16] text-slate-100 flex flex-col justify-between safe-top safe-bottom px-4 sm:px-6 md:px-12 max-w-4xl mx-auto selection:bg-indigo-500 selection:text-white relative">
+      {/* Software Brightness Overlay (CSS full-screen overlay) */}
+      <BrightnessOverlay brightness={brightness} />
+
+      {/* Hidden Audio Element for iOS background audio */}
       <audio
         ref={audioRef}
-        src={currentTrack ? currentTrack.url : undefined}
-        onTimeUpdate={handleTimeUpdate}
-        onLoadedMetadata={handleLoadedMetadata}
-        onEnded={handleAudioEnded}
+        onTimeUpdate={handleMediaTimeUpdate}
+        onLoadedMetadata={handleMediaLoadedMetadata}
+        onEnded={handleMediaEnded}
         playsInline
         preload="auto"
       />
 
-      {/* Hidden File Input */}
+      {/* Hidden File Import Input (accepts audio, video, lrc) */}
       <input
         ref={fileInputRef}
         type="file"
         multiple
-        accept="audio/*"
+        accept="audio/*,video/*,.lrc,text/plain"
         onChange={handleFileImport}
         className="hidden"
       />
 
-      {/* Header */}
-      <header className="flex items-center justify-between py-4 border-b border-slate-800/80">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-            <Music className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight text-white flex items-center gap-2">
-              SonicWave <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-medium">PWA</span>
-            </h1>
-            <p className="text-xs text-slate-400">iOS Background Audio Engine</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* Add Music button */}
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition-all duration-200 active:scale-95"
-          >
-            <Upload className="w-4 h-4" />
-            <span>Import Files</span>
-          </button>
-        </div>
-      </header>
+      {/* Header with Playlist Manager & Import */}
+      <Header
+        playlists={playlists}
+        activePlaylistId={activePlaylistId}
+        onSelectPlaylist={handleSelectPlaylist}
+        onCreatePlaylist={handleCreatePlaylist}
+        onDeletePlaylist={handleDeletePlaylist}
+        trackCount={tracks.length}
+        onTriggerImport={() => fileInputRef.current?.click()}
+      />
 
       {/* iOS PWA Install Banner Notice */}
       {showInstallPrompt && (
@@ -521,9 +748,9 @@ export default function App() {
           <div className="flex gap-2.5">
             <Info className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
             <div className="text-xs text-slate-300 leading-relaxed">
-              <span className="font-semibold text-white">For uninterrupted background playback on iOS:</span>
+              <span className="font-semibold text-white">For background playback on iOS:</span>
               <br />
-              Tap the Safari <span className="font-semibold text-indigo-300">Share icon</span> and select <span className="font-semibold text-indigo-300">"Add to Home Screen"</span>.
+              Tap Safari <span className="font-semibold text-indigo-300">Share</span> and select <span className="font-semibold text-indigo-300">"Add to Home Screen"</span>.
             </div>
           </div>
           <button
@@ -535,7 +762,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Status Toast Notification */}
+      {/* Toast Notification */}
       {statusMessage && (
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-indigo-600 text-white text-xs font-medium shadow-xl flex items-center gap-2 animate-bounce">
           <CheckCircle2 className="w-4 h-4" />
@@ -543,239 +770,78 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Player Display */}
-      <main className="flex-1 flex flex-col justify-center items-center py-6">
-        {/* Vinyl / Cover Art Area */}
-        <div className="relative group flex items-center justify-center my-4">
-          {/* Ambient Glow */}
-          <div
-            className={`absolute w-64 h-64 rounded-full blur-3xl transition-opacity duration-1000 ${
-              isPlaying ? 'bg-indigo-500/25 opacity-100' : 'bg-transparent opacity-0'
-            }`}
-          />
+      {/* Center Media & Controls Area */}
+      <main className="flex-1 flex flex-col justify-center items-center py-4">
+        {/* Vinyl / Cover Art / Video / Lyrics Display */}
+        <MediaDisplay
+          currentTrack={currentTrack}
+          isPlaying={isPlaying}
+          currentTime={currentTime}
+          videoRef={videoRef}
+          onMediaTimeUpdate={handleMediaTimeUpdate}
+          onMediaLoadedMetadata={handleMediaLoadedMetadata}
+          onMediaEnded={handleMediaEnded}
+          onSeek={handleSeek}
+          onUploadLrc={(trackId, text) => handleAttachLrc(trackId, text)}
+          onTogglePiP={handleTogglePiP}
+          isPiPAvailable={isPiPAvailable}
+        />
 
-          {/* Rotating Vinyl Record Artwork */}
-          <div
-            className={`relative w-56 h-56 sm:w-64 sm:h-64 rounded-full border-4 border-slate-800/80 bg-gradient-to-br from-slate-900 via-[#101424] to-slate-900 shadow-2xl flex items-center justify-center overflow-hidden transition-transform ${
-              isPlaying ? 'animate-[spin_16s_linear_infinite]' : ''
-            }`}
-          >
-            {/* Vinyl grooves */}
-            <div className="absolute inset-4 rounded-full border border-slate-700/20" />
-            <div className="absolute inset-8 rounded-full border border-slate-700/20" />
-            <div className="absolute inset-12 rounded-full border border-slate-700/20" />
-            <div className="absolute inset-16 rounded-full border border-slate-700/30" />
-
-            {/* Center Label */}
-            <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-indigo-600 to-pink-500 flex flex-col items-center justify-center shadow-inner text-center p-2">
-              <Sparkles className="w-6 h-6 text-white drop-shadow" />
-              <span className="text-[9px] font-bold text-white uppercase tracking-wider mt-1">iOS Audio</span>
-            </div>
-
-            {/* Spindle hole */}
-            <div className="absolute w-4 h-4 rounded-full bg-[#090d16] border-2 border-slate-900" />
-          </div>
-
-          {/* Audio Visualizer Bars (Simulated while playing) */}
-          {isPlaying && (
-            <div className="absolute bottom-2 flex items-end gap-1.5 px-3 py-1.5 rounded-full bg-slate-950/80 backdrop-blur-md border border-slate-800">
-              <span className="w-1 bg-indigo-400 rounded-full animate-bar-1" />
-              <span className="w-1 bg-purple-400 rounded-full animate-bar-2" />
-              <span className="w-1 bg-pink-400 rounded-full animate-bar-3" />
-              <span className="w-1 bg-indigo-300 rounded-full animate-bar-4" />
-            </div>
-          )}
-        </div>
-
-        {/* Track Title & Artist */}
-        <div className="w-full text-center mt-3 mb-4 px-4">
+        {/* Track Title, Artist & Album */}
+        <div className="w-full text-center mt-2 mb-3 px-4">
           <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-white truncate max-w-md mx-auto">
-            {currentTrack ? currentTrack.title : 'No Track Loaded'}
+            {currentTrack ? currentTrack.title : 'No Track Selected'}
           </h2>
           <p className="text-sm text-slate-400 mt-1 flex items-center justify-center gap-2">
-            <span>{currentTrack ? currentTrack.artist : 'Select or import songs to begin'}</span>
-            {currentTrack && (
-              <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
-                {formatSize(currentTrack.size)}
+            <span>{currentTrack ? currentTrack.artist : 'Import songs or videos to begin'}</span>
+            {currentTrack?.album && (
+              <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400">
+                {currentTrack.album}
               </span>
             )}
           </p>
         </div>
 
-        {/* Progress Bar & Timers */}
-        <div className="w-full max-w-md px-2">
-          <div className="relative flex items-center">
-            <input
-              type="range"
-              min={0}
-              max={duration || 0}
-              value={currentTime}
-              onChange={handleSeek}
-              disabled={!currentTrack}
-              aria-label="Progress scrubber"
-              className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none transition-all disabled:opacity-40"
-            />
-          </div>
-          <div className="flex justify-between items-center text-xs font-mono text-slate-400 mt-1.5">
-            <span>{formatTime(currentTime)}</span>
-            <span>{formatTime(duration)}</span>
-          </div>
-        </div>
-
-        {/* Primary Playback Controls */}
-        <div className="flex items-center justify-center gap-5 sm:gap-7 mt-5">
-          {/* Shuffle Button */}
-          <button
-            onClick={() => setIsShuffle(!isShuffle)}
-            className={`p-2.5 rounded-full transition-colors ${
-              isShuffle ? 'text-indigo-400 bg-indigo-500/10' : 'text-slate-400 hover:text-white'
-            }`}
-            title={isShuffle ? 'Shuffle Enabled' : 'Shuffle Disabled'}
-            aria-label="Toggle Shuffle"
-          >
-            <Shuffle className="w-5 h-5" />
-          </button>
-
-          {/* Previous Track */}
-          <button
-            onClick={handlePrev}
-            disabled={playlist.length === 0}
-            className="p-3 rounded-full text-slate-200 hover:text-white hover:bg-slate-800 active:scale-90 transition-all disabled:opacity-30 disabled:pointer-events-none"
-            aria-label="Previous Track"
-          >
-            <SkipBack className="w-6 h-6 fill-current" />
-          </button>
-
-          {/* Play / Pause Toggle Button */}
-          <button
-            onClick={togglePlay}
-            disabled={playlist.length === 0}
-            className="w-16 h-16 rounded-full bg-gradient-to-tr from-indigo-500 via-indigo-600 to-purple-600 text-white flex items-center justify-center shadow-xl shadow-indigo-600/30 hover:shadow-indigo-600/50 hover:scale-105 active:scale-95 transition-all duration-200 disabled:opacity-30 disabled:pointer-events-none"
-            aria-label={isPlaying ? 'Pause' : 'Play'}
-          >
-            {isPlaying ? (
-              <Pause className="w-7 h-7 fill-current" />
-            ) : (
-              <Play className="w-7 h-7 fill-current translate-x-0.5" />
-            )}
-          </button>
-
-          {/* Next Track */}
-          <button
-            onClick={handleNext}
-            disabled={playlist.length === 0}
-            className="p-3 rounded-full text-slate-200 hover:text-white hover:bg-slate-800 active:scale-90 transition-all disabled:opacity-30 disabled:pointer-events-none"
-            aria-label="Next Track"
-          >
-            <SkipForward className="w-6 h-6 fill-current" />
-          </button>
-
-          {/* Loop Mode (All / One / None) */}
-          <button
-            onClick={toggleLoopMode}
-            className={`p-2.5 rounded-full transition-colors relative ${
-              loopMode !== 'none' ? 'text-indigo-400 bg-indigo-500/10' : 'text-slate-400 hover:text-white'
-            }`}
-            title={`Loop Mode: ${loopMode.toUpperCase()}`}
-            aria-label="Toggle Loop Mode"
-          >
-            {loopMode === 'one' ? <Repeat1 className="w-5 h-5" /> : <Repeat className="w-5 h-5" />}
-          </button>
-        </div>
+        {/* Playback Controls (Seek Bar, Shuffle, Repeat, Speed, PiP, Brightness) */}
+        <PlayerControls
+          currentTrack={currentTrack}
+          isPlaying={isPlaying}
+          currentTime={currentTime}
+          duration={duration}
+          repeatMode={repeatMode}
+          isShuffle={isShuffle}
+          playbackRate={playbackRate}
+          brightness={brightness}
+          isPiPAvailable={isPiPAvailable}
+          onTogglePlay={togglePlay}
+          onPrev={handlePrev}
+          onNext={handleNext}
+          onSeek={handleSeek}
+          onToggleRepeat={handleToggleRepeat}
+          onToggleShuffle={handleToggleShuffle}
+          onChangePlaybackRate={handleChangePlaybackRate}
+          onChangeBrightness={handleChangeBrightness}
+          onTogglePiP={handleTogglePiP}
+        />
       </main>
 
-      {/* Playlist & Library Section */}
-      <section className="bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-4 mb-2 shadow-2xl flex flex-col max-h-72">
-        <div className="flex items-center justify-between pb-3 mb-2 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <ListMusic className="w-4 h-4 text-indigo-400" />
-            <h3 className="text-sm font-bold text-white">
-              Queue & IndexedDB Library ({playlist.length})
-            </h3>
-          </div>
-
-          {playlist.length > 0 && (
-            <button
-              onClick={handleClearAll}
-              className="text-xs text-rose-400 hover:text-rose-300 hover:underline flex items-center gap-1 transition-colors"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear All</span>
-            </button>
-          )}
-        </div>
-
-        {/* Scrollable Song List */}
-        <div className="overflow-y-auto space-y-1.5 pr-1 flex-1">
-          {isLoadingStorage ? (
-            <div className="py-8 text-center text-xs text-slate-400">
-              Loading audio from iOS IndexedDB storage...
-            </div>
-          ) : playlist.length === 0 ? (
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className="py-8 border-2 border-dashed border-slate-800 hover:border-indigo-500/50 rounded-2xl flex flex-col items-center justify-center cursor-pointer transition-colors group"
-            >
-              <Upload className="w-8 h-8 text-slate-500 group-hover:text-indigo-400 transition-colors mb-2" />
-              <p className="text-sm font-semibold text-slate-300">Tap to import audio files</p>
-              <p className="text-xs text-slate-500 mt-1">Supports MP3, M4A, AAC, WAV, FLAC from iOS Files App</p>
-            </div>
-          ) : (
-            playlist.map((track, idx) => {
-              const isCurrent = idx === currentIndex;
-              return (
-                <div
-                  key={track.id}
-                  onClick={() => playTrackAtIndex(idx)}
-                  className={`group flex items-center justify-between p-2.5 rounded-xl cursor-pointer transition-all ${
-                    isCurrent
-                      ? 'bg-indigo-600/20 border border-indigo-500/40 text-white'
-                      : 'hover:bg-slate-800/50 text-slate-300 border border-transparent'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 min-w-0 pr-2">
-                    <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center shrink-0">
-                      {isCurrent && isPlaying ? (
-                        <div className="flex items-end gap-0.5 h-4">
-                          <span className="w-0.5 h-3 bg-indigo-400 animate-pulse" />
-                          <span className="w-0.5 h-4 bg-indigo-400 animate-pulse delay-75" />
-                          <span className="w-0.5 h-2 bg-indigo-400 animate-pulse delay-150" />
-                        </div>
-                      ) : (
-                        <span className="text-xs font-mono text-slate-400">{idx + 1}</span>
-                      )}
-                    </div>
-                    <div className="min-w-0">
-                      <p className={`text-xs font-semibold truncate ${isCurrent ? 'text-indigo-300' : 'text-slate-200'}`}>
-                        {track.title}
-                      </p>
-                      <p className="text-[11px] text-slate-400 truncate">
-                        {track.artist} • {formatSize(track.size)}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {/* Delete track */}
-                    <button
-                      onClick={(e) => handleDeleteTrack(e, track.id, idx)}
-                      className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
-                      title="Remove track"
-                      aria-label="Remove track"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </section>
+      {/* Playlist & Library Section with Drag & Drop + Swipe to Delete */}
+      <TrackList
+        tracks={tracks}
+        currentIndex={currentIndex}
+        isPlaying={isPlaying}
+        isLoading={isLoadingTracks}
+        onPlayTrack={(idx) => playTrackAtIndex(idx, true)}
+        onDeleteTrack={handleDeleteTrack}
+        onClearAll={handleClearAllTracks}
+        onReorderTracks={handleReorderTracks}
+        onAttachLrc={handleAttachLrc}
+        onTriggerImport={() => fileInputRef.current?.click()}
+      />
 
       {/* Footer Info */}
       <footer className="text-center text-[10px] text-slate-400 py-2">
-        iOS Background Audio Ready • Media Session API • Persistent IndexedDB
+        iOS Background Audio • ID3 Tags • Dynamic LRC • Sortable Queue
       </footer>
     </div>
   );
